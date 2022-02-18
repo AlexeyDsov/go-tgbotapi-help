@@ -2,10 +2,7 @@ package easy
 
 import (
 	"errors"
-	"fmt"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"gopkg.in/h2non/gentleman.v2"
-	"log"
 	"strings"
 )
 
@@ -17,147 +14,145 @@ type lastMessageStorage interface {
 }
 
 type EasyApi struct {
+	*EasyCallback
+	*EasyDownloadFile
+	*EasyApiKeyboard
 	api                *tgbotapi.BotAPI
 	lastMessageStorage lastMessageStorage
+	NoReplace          bool
+	MarkdownMode       string
 }
 
 func NewEasyApi(api *tgbotapi.BotAPI, lastMessageStorage lastMessageStorage) *EasyApi {
-	return &EasyApi{api: api, lastMessageStorage: lastMessageStorage}
+	return &EasyApi{
+		EasyCallback:       &EasyCallback{api},
+		EasyDownloadFile:   &EasyDownloadFile{api},
+		EasyApiKeyboard:    &EasyApiKeyboard{api, lastMessageStorage},
+		api:                api,
+		lastMessageStorage: lastMessageStorage,
+		MarkdownMode:       tgbotapi.ModeMarkdownV2,
+	}
 }
 
-func (a EasyApi) AnswerEmptyCallback(update tgbotapi.Update) {
-	a.AnswerCallback(update, "")
+func (a *EasyApi) Api() *tgbotapi.BotAPI {
+	return a.api
 }
 
-func (a EasyApi) AnswerCallback(update tgbotapi.Update, text string) {
-	if update.CallbackQuery == nil {
-		return
+func (a *EasyApi) SendEasyMessage(easyMessage *Message) (*tgbotapi.Message, error) {
+	text := easyMessage.text
+	if easyMessage.oldReplace {
+		//@todo не должно быть таких замен в этом коде
+		text = strings.Replace(text, "(", "\\(", -1)
+		text = strings.Replace(text, ".", "\\.", -1)
+		text = strings.Replace(text, ")", "\\)", -1)
+		text = strings.Replace(text, "_", "\\_", -1)
 	}
 
-	_, err := a.api.Send(tgbotapi.NewCallback(update.CallbackQuery.ID, text))
-
+	message, err := a.NewMessage(*easyMessage.update, text)
 	if err != nil {
-		log.Printf("error while sending response: %s", err)
+		return nil, err
 	}
+	if len(easyMessage.ParseMode) > 0 {
+		message.ParseMode = easyMessage.ParseMode
+	}
+
+	messageResult, err := a.SendChattableCommand(*easyMessage.update, message, easyMessage.command)
+
+	return &messageResult, err
 }
 
-func (a EasyApi) SendMessage(update tgbotapi.Update, text string) (tgbotapi.Message, error) {
+func (a *EasyApi) Send(chattable tgbotapi.Chattable) (tgbotapi.Message, error) {
+	return a.api.Send(chattable)
+}
+
+func (a *EasyApi) SendMessage(update tgbotapi.Update, text string) (tgbotapi.Message, error) {
 	return a.SendMessageCommand(update, text, "")
 }
 
-func (a EasyApi) SendMessageCommand(update tgbotapi.Update, text string, command string) (tgbotapi.Message, error) {
-	var message *tgbotapi.Message
-	if update.CallbackQuery != nil && update.CallbackQuery.Message != nil {
-		message = update.CallbackQuery.Message
-	} else if update.Message != nil {
-		message = update.Message
+func (a *EasyApi) SendMessageCommand(update tgbotapi.Update, text string, command string) (tgbotapi.Message, error) {
+	easyMessage :=
+		NewMessage(&update, text).
+			WithCommand(command).
+			WithOldReplace().
+			WithParseMk2()
+
+	resultMessage, err := a.SendEasyMessage(easyMessage)
+
+	if resultMessage == nil {
+		resultMessage = &tgbotapi.Message{}
 	}
+
+	return *resultMessage, err
+	////@todo не должно быть таких замен в этом коде
+	//text = strings.Replace(text, "(", "\\(", -1)
+	//text = strings.Replace(text, ".", "\\.", -1)
+	//text = strings.Replace(text, ")", "\\)", -1)
+	//
+	//newMessage, err := a.NewMessageMk2(update, text)
+	//if err != nil {
+	//	return tgbotapi.Message{}, err
+	//}
+	//
+	//return a.SendChattableCommand(update, newMessage, command)
+}
+
+func (a *EasyApi) NewMessageMk2(update tgbotapi.Update, text string) (*tgbotapi.MessageConfig, error) {
+	message, err := a.NewMessage(update, text)
+	if err == nil {
+		message.ParseMode = tgbotapi.ModeMarkdownV2
+	}
+
+	return message, err
+}
+
+func (a *EasyApi) NewMessage(update tgbotapi.Update, text string) (*tgbotapi.MessageConfig, error) {
+	message := a.resolverMessage(update)
 
 	if message == nil {
-		return tgbotapi.Message{}, errors.New("no message in update")
+		return nil, errors.New("no message in update")
 	}
 	if message.Chat == nil {
-		return tgbotapi.Message{}, errors.New("no chat in message")
+		return nil, errors.New("no chat in message")
 	}
 
-	text = strings.Replace(text, "(", "\\(", -1)
-	text = strings.Replace(text, ".", "\\.", -1)
-	text = strings.Replace(text, ")", "\\)", -1)
 	newMessage := tgbotapi.NewMessage(message.Chat.ID, text)
-	newMessage.ParseMode = tgbotapi.ModeMarkdownV2
+	return &newMessage, nil
+}
 
-	sentMessage, err := a.api.Send(newMessage)
+func (a *EasyApi) SendChattable(update tgbotapi.Update, chattable tgbotapi.Chattable) (tgbotapi.Message, error) {
+	return a.SendChattableCommand(update, chattable, "")
+}
+
+func (a *EasyApi) SendChattableCommand(
+	update tgbotapi.Update,
+	chattable tgbotapi.Chattable,
+	command string,
+) (tgbotapi.Message, error) {
+	sentMessage, err := a.api.Send(chattable)
 	if err == nil {
-		var fromUser *tgbotapi.User
-		if update.CallbackQuery != nil && update.CallbackQuery.From != nil{
-			fromUser = update.CallbackQuery.From
-		} else if update.Message != nil && update.Message.From != nil {
-			fromUser = update.Message.From
+		isPrivate := sentMessage.Chat.IsPrivate()
+		if fromUser := a.resolveFromUser(update); fromUser != nil && isPrivate {
+			a.lastMessageStorage.Store(fromUser, command)
 		}
-		a.lastMessageStorage.Store(fromUser, command)
 	}
 
 	return sentMessage, err
 }
 
-func (a EasyApi) SendKeyboard(update tgbotapi.Update, keyboard EasyKeyboard, text string, tryInline bool) {
-	markup := keyboard.InlineKeyboardMarkup()
-
-	messages := a.keyboardMessage(update, markup, text, tryInline)
-
-	for _, message := range messages {
-		_, err := a.api.Send(message)
-		if err != nil {
-			log.Printf("update inline keyboard error: %s", err)
-		}
+func (a *EasyApi) resolverMessage(update tgbotapi.Update) *tgbotapi.Message {
+	if update.CallbackQuery != nil && update.CallbackQuery.Message != nil {
+		return update.CallbackQuery.Message
+	} else if update.Message != nil {
+		return update.Message
 	}
-
-	a.lastMessageStorage.StoreByUpdate(&update, "")
-}
-
-func (a *EasyApi) DownloadFileString(fileId string) (string, error) {
-	fileDirectLink, err := a.api.GetFileDirectURL(fileId)
-	if err != nil {
-		return "", fmt.Errorf("Getting file direct link error: %s", err)
-	}
-
-	cli := gentleman.New()
-	cli.URL(fileDirectLink)
-
-	req := cli.Request()
-
-	res, err := req.Send()
-	if err != nil {
-		return "", fmt.Errorf("Downloading sended file error: %s", err)
-	}
-	if !res.Ok {
-		return "", fmt.Errorf("Downloading sended file error invalid server response: %d\n", res.StatusCode)
-	}
-
-	return res.String(), nil
-}
-
-func (a EasyApi) keyboardMessage(
-	update tgbotapi.Update,
-	markup tgbotapi.InlineKeyboardMarkup,
-	text string,
-	tryInline bool,
-) []tgbotapi.Chattable {
-	if cq := update.CallbackQuery; cq != nil {
-		if tryInline {
-			return a.keyBoardMessageByCallbackQuery(cq, markup, text)
-		} else {
-			return a.keyBoardNewMessage(cq.Message.Chat, text, markup)
-		}
-	} else if message := update.Message; message != nil {
-		return a.keyBoardNewMessage(message.Chat, text, markup)
-	}
-
 	return nil
 }
-func (a EasyApi) keyBoardMessageByCallbackQuery(
-	callbackQuery *tgbotapi.CallbackQuery,
-	markup tgbotapi.InlineKeyboardMarkup,
-	text string,
-) (messages []tgbotapi.Chattable) {
-	messageText := tgbotapi.NewEditMessageText(
-		callbackQuery.Message.Chat.ID,
-		callbackQuery.Message.MessageID,
-		text,
-	)
-	messageText.ReplyMarkup = &markup
 
-	messages = append(messages, messageText)
-
-	return messages
-}
-
-func (a EasyApi) keyBoardNewMessage(
-	chat *tgbotapi.Chat,
-	text string,
-	markup tgbotapi.InlineKeyboardMarkup,
-) []tgbotapi.Chattable {
-	newMessage := tgbotapi.NewMessage(chat.ID, text)
-	newMessage.ReplyMarkup = markup
-	return []tgbotapi.Chattable{newMessage}
+func (a *EasyApi) resolveFromUser(update tgbotapi.Update) *tgbotapi.User {
+	if update.CallbackQuery != nil && update.CallbackQuery.From != nil {
+		return update.CallbackQuery.From
+	} else if update.Message != nil && update.Message.From != nil {
+		return update.Message.From
+	}
+	return nil
 }

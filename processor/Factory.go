@@ -35,8 +35,16 @@ func (f Factory) Chain(processors ...Processor) Chain {
 	return Chain(processors)
 }
 
-func (f Factory) Private(processor Processor) Private {
-	return Private{processor: processor}
+func (f Factory) Composite(processors ...Processor) Composite {
+	return Composite(processors)
+}
+
+func (f Factory) Private(processor Processor) Processor {
+	return NewPrivateChat(processor)
+}
+
+func (f Factory) AnyGroup(processor Processor) Processor {
+	return NewAnyGroupChat(processor)
 }
 
 func (f Factory) Message(processor Processor) WithMessage {
