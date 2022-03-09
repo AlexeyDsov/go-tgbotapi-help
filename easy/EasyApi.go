@@ -46,6 +46,7 @@ func (a *EasyApi) SendEasyMessage(easyMessage *Message) (*tgbotapi.Message, erro
 		text = strings.Replace(text, ".", "\\.", -1)
 		text = strings.Replace(text, ")", "\\)", -1)
 		text = strings.Replace(text, "_", "\\_", -1)
+		text = strings.Replace(text, "-", "\\-", -1)
 	}
 
 	message, err := a.NewMessage(*easyMessage.update, text)
